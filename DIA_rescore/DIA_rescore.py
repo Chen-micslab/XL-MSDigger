@@ -1,0 +1,468 @@
+import argparse
+import logging
+import os
+import sys
+from torch.utils.data import Dataset,DataLoader
+import numpy as  np
+import pandas as pd
+from torch import optim
+from tqdm import tqdm
+import torch
+from torch import Tensor
+from torch.nn import functional as F
+import torch.nn as nn
+from torch.nn.modules.module import Module
+from torch.nn.init import xavier_uniform_
+from torch.nn.modules.linear import Linear
+from torch.utils.data import DataLoader, random_split
+from torch.utils.tensorboard import SummaryWriter
+from sklearn.preprocessing import StandardScaler
+
+class Mydata_label(Dataset):
+    def __init__(self, feature, label):
+        self.feature = np.array(feature)  ##这里data是输入的feature dataframe
+        self.label = np.array(label)
+
+    def __getitem__(self, index):
+        feature = self.feature[index]
+        label = self.label[index]
+        sample = {'feature': feature, 'label': label}
+        return sample
+
+    def __len__(self):
+        return len(self.label)
+
+class Mydata_nolabel(Dataset):
+    def __init__(self, feature):
+        self.feature = np.array(feature)  ##这里data是输入的feature dataframe
+
+    def __getitem__(self, index):
+        feature = self.feature[index]
+        sample = {'feature': feature}
+        return sample
+
+    def __len__(self):
+        return len(self.feature)
+
+class dnn_model(Module):
+    def __init__(self, feature_num = 20):
+        super(dnn_model, self).__init__()
+        self.input = feature_num
+        self.linear1 = Linear(self.input, 100)
+        self.linear2 = Linear(100, 2000)
+        self.linear3 = Linear(2000, 100)
+        self.linear4 = Linear(100, 1)
+
+    def forward(self, pep_feaure) -> Tensor:
+        pep = self.linear1(pep_feaure)
+        pep = F.relu(pep)
+        pep = self.linear2(pep)
+        pep = F.relu(pep)
+        pep = self.linear3(pep)
+        pep = F.relu(pep)
+        rescore = self.linear4(pep)
+        return rescore
+
+    def _reset_parameters(self):
+        for p in self.parameters():
+            if p.dim() > 1:
+                xavier_uniform_(p)
+
+class dnn_rescore():
+    def __init__(self):
+        self.load_param_dir = None
+        self.epoch = 10
+        self.batch_size = 50
+        self.lr = 0.001
+        self.val_percent = 0.1
+        self.cv_fold = 4
+        self.fdr = 0.001
+        self.max_train_sample = 5000
+
+    def eval_model(self, model, loader, device):
+        model.eval()  ##将model调整为eval模式
+        n_val = len(loader)  # val中的batch数量
+        ex = torch.tensor([]).to(device=device, dtype=torch.float32)
+        pre = torch.tensor([]).to(device=device, dtype=torch.float32)
+        with tqdm(total=n_val, desc='Validation round', unit='batch', leave=False) as pbar:
+            for batch in loader:
+                feature = batch['feature'].to(device=device, dtype=torch.float32)
+                label = batch['label'].to(device=device, dtype=torch.float32)
+                with torch.no_grad():
+                    score_pre = model(feature).view(label.size(0))  ##将数据送入model，得到预测的ccs
+                ex = torch.cat((ex, label), 0)
+                pre = torch.cat((pre, score_pre), 0)
+                pbar.update()
+        model.train()  ##将模型调回train模式
+        tot = torch.abs(ex - pre)
+        mean_error = tot.mean()
+        median_error = tot.median()
+        return mean_error, median_error  ##返回loss的均值以及MRE
+
+    def train_DNN(self, model, device, epochs=10, batch_size=50, lr=0.001, val_percent=0.1, save_mp=True, checkpoint_dir=None,
+                  feature=None, label=None):
+        mydata = Mydata_label(feature, label)  ##导入dataset
+        n_val = int(len(mydata) * val_percent)  ##计算validation data的数量
+        n_train = len(mydata) - n_val  ##计算train data的数量
+        train_data, val_data = random_split(mydata, [n_train, n_val])  ##随机分配validation data和train data
+        train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=0,
+                                  pin_memory=True)  ##生成train data
+        val_loader = DataLoader(val_data, batch_size=batch_size, shuffle=True, num_workers=0,
+                                pin_memory=True, )  ##生成validation data
+        writer = SummaryWriter(comment=f'LR_{lr}_BS_{batch_size}')
+        global_step = 0
+        logging.info(f'''Starting training:
+                Epochs:          {epochs}
+                Batch size:      {batch_size}
+                Learning rate:   {lr}
+                Training size:   {n_train}
+                Validation size: {n_val}
+                Checkpoints:     {save_mp}
+                Device:          {device.type}
+            ''')
+        optimizer = optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=0,
+                               amsgrad=False)  ##选择optimizer为Adam,注意传入的是model的parameters
+        # scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer=optimizer,T_0=10,T_mult=2,eta_min=0.000001)
+        scheduler = optim.lr_scheduler.StepLR(optimizer=optimizer, step_size=5, gamma=0.5)
+        best_index = 1
+        for epoch in range(epochs):
+            model.train()  ##设置模型为train模式
+            local_step = 0
+            epoch_loss = 0  ##用于存储一个epoch中loss之和
+            with tqdm(total=n_train, desc=f'Epoch {epoch + 1}/{epochs}', unit='peptide') as pbar:  ##使用tqdm来显示训练的进度条
+                for batch in train_loader:
+                    local_step += 1
+                    feature = batch['feature'].to(device=device, dtype=torch.float32)
+                    label = batch['label'].to(device=device, dtype=torch.float32)
+                    score_pre = model(feature).view(label.size(0))  ##将数据送入model，得到预测的ccs
+                    loss_f = nn.MSELoss()
+                    loss = loss_f(label, score_pre)  ##计算ccs预测值与真实值的均方根误差
+                    epoch_loss += loss.item()
+                    writer.add_scalar('Loss/train', loss.item(), global_step=global_step)
+                    pbar.set_postfix(**{'loss (batch)': loss.item()})  # 输入一个字典，来显示实验指标
+                    optimizer.zero_grad()  ##梯度清零
+                    loss.backward()  ##反向传播
+                    optimizer.step()
+                    pbar.update(label.shape[0])
+                    global_step += 1
+                    if global_step % (n_train // (2 * batch_size)) == 0:
+                        val_MeanE, val_MedianE = self.eval_model(model, val_loader, device)
+                        writer.add_scalar('learning rate', optimizer.param_groups[0]['lr'], global_step)
+                        logging.info('Validation MeanE: {}'.format(val_MeanE))
+                        logging.info('Validation MedianE: {}'.format(val_MedianE))
+                        if val_MedianE < best_index:
+                            torch.save(model.state_dict(),
+                                       checkpoint_dir + f'model_param_epoch{epoch + 1}MedianE{val_MedianE}.pth')  ###只保存模型的参数到checkpoint_dir
+                            para_dir = checkpoint_dir + f'model_param_epoch{epoch + 1}MedianE{val_MedianE}.pth'
+                            logging.info(f'Checkpoint {epoch + 1}global_step{global_step} saved !')
+                            best_index = val_MedianE
+            scheduler.step()
+        writer.close()
+        return para_dir
+
+    def do_train(self, feature, label, checkpoint_dir):
+        if os.path.exists(checkpoint_dir):
+            pass
+        else: os.makedirs(checkpoint_dir)
+        torch.cuda.manual_seed(1)
+        torch.manual_seed(1)
+        np.random.seed(1)
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')  ##判断使用GPU还是CPU
+        print(device)
+        logging.info(f'Using device {device}')
+        model = dnn_model()  ###生成模型
+        if self.load_param_dir:
+            model.load_state_dict(torch.load(self.load_param_dir, map_location=device))
+            logging.info(f'Model parameters loaded from {self.load_param_dir}')
+        model.to(device=device)
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                print(name)
+        para_dir = self.train_DNN(model = model,
+                                 device = device,
+                                 epochs = self.epoch,
+                                 batch_size = self.batch_size,
+                                 lr = self.lr,
+                                 val_percent = self.val_percent,
+                                 save_mp = True,
+                                 checkpoint_dir = checkpoint_dir,
+                                 feature=feature, label = label)
+        return para_dir
+
+    def do_predict(self, para_dir, test_feature, batch_size):
+        model = dnn_model()
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model.load_state_dict(torch.load(para_dir, map_location=device))
+        logging.info(f'Model parameters loaded from {para_dir}')
+        test_data = Mydata_nolabel(test_feature)
+        test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=False, num_workers=3, pin_memory=True)
+        n_test = len(test_loader)
+        model.to(device=device)
+        model.eval()  ##将model调整为eval模式
+        pre = torch.tensor([]).to(device=device, dtype=torch.float32)
+        with tqdm(total=n_test, desc='Validation round', unit='batch', leave=False) as pbar:
+            for batch in test_loader:
+                feature = batch['feature'].to(device=device, dtype=torch.float32)
+                with torch.no_grad():
+                    score_pre = model(feature).view(feature.size(0))  ##将数据送入model，得到预测的ccs
+                pre = torch.cat((pre, score_pre), 0)
+                pbar.update()
+        pre = pre.to(device='cpu', dtype=torch.float32).numpy()
+        pre = list(pre)
+        return pre
+
+    def cv_score(self, feature_dir):  ###data提取后的feature信息
+        # feature_list = ['Charge', 'SVM_Score', 'len1', 'len2', 'rt_AE', 'ccs_RE', 'match_num', 'match_num1', 'match_num2',
+        #                 'both_m_p_num', 'both_m_p_num1', 'both_m_p_num2', 'cosine', 'SA', 'pearson', 'spearman']
+        data = pd.read_csv(feature_dir)
+        feature_list = ['Evidence', 'CScore', 'Q.Value', 'PEP', 'pep1_num', 'pep2_num', 'pep1_num_matched', 'pep2_num_matched',
+                        'pep_cosine', 'pep1_cosine', 'pep2_cosine',
+                        'spec_frag_num', 'alpha_spec_frag_num', 'beta_spec_frag_num',
+                        'pep_entropy', 'pep1_entropy', 'pep2_entropy',
+                        'delta_RT', 'delta_IM', 'averge_corr_list']
+        data_target = data[(data['type'] == 'TT') & (data['type2'] == 'exp')]
+        data_decoy = data[(data['type'] == 'TD') | (data['type'] == 'DD')]
+        type = set(list(data['type2']))
+        if 'test' in type:
+            test = data[data['type2'] == 'test']
+        if self.cv_fold > 1:
+            test_df_list = []
+            for i in range(self.cv_fold):
+                t_mask = np.ones(len(data_target), dtype=bool)
+                slice_num = slice(i, len(data_target), self.cv_fold)
+                t_mask[slice_num] = False
+                cv_df_target = data_target[t_mask]
+                train_t_df = cv_df_target[cv_df_target['Q.Value'] <= self.fdr]
+                train_t_df = train_t_df[train_t_df['pep1_num_matched'] != 0]
+                train_t_df = train_t_df[train_t_df['pep2_num_matched'] != 0]
+                train_t_df = train_t_df[train_t_df['Ms1.Profile.Corr'] > 0.8]
+                # train_t_df = train_t_df[train_t_df['Mass.Evidence'] > 0.5]
+                train_t_df = train_t_df[train_t_df['inten_ratio'] > 1]
+                test_t_df = data_target[slice_num]
+
+                d_mask = np.ones(len(data_decoy), dtype=bool)
+                slice_num = slice(i, len(data_decoy), self.cv_fold)
+                d_mask[slice_num] = False
+                train_d_df = data_decoy[d_mask]
+                test_d_df = data_decoy[slice_num]
+                if len(train_t_df) > self.max_train_sample:
+                    train_t_df = train_t_df.sample(n=self.max_train_sample, random_state=123)
+                if len(train_d_df) > self.max_train_sample:
+                    train_d_df = train_d_df.sample(n=self.max_train_sample, random_state=123)
+                print(len(train_t_df['Modified.Sequence']))
+                print(len(train_d_df['Modified.Sequence']))
+                train_df = pd.concat((train_t_df, train_d_df))
+                train_label = np.ones(len(train_df), dtype=np.int32)
+                train_label[len(train_t_df):] = 0
+                feature_train = train_df[feature_list]
+                checkpoint_dir = feature_dir.rsplit('/', 1)[0] + '/' + 'checkpoint/dda_rescore/'  ##checkpoint文件夹的路径，用于保存模型参数
+                para_dir = self.do_train(feature_train, train_label, checkpoint_dir)
+                test_df = pd.concat((test_t_df, test_d_df))
+                feature_test = test_df[feature_list]
+                pre = self.do_predict(para_dir, feature_test, self.batch_size)
+                test_df.insert(0, 'ml_score', pre)
+                test_df_list.append(test_df)
+                if 'test' in type:
+                    pre1 = np.array(self.do_predict(para_dir, test[feature_list], self.batch_size))
+                    # test.insert(0, 'ml_score', pre1)
+                    if i == 0:
+                        ml_score = pre1
+                    else:
+                        ml_score = ml_score + pre1
+            data1 = pd.concat(test_df_list)
+            if 'test' in type:
+                ml_score = ml_score / self.cv_fold
+                test.insert(0, 'ml_score', ml_score)
+                data1 = pd.concat([data1, test])
+            import shutil
+            shutil.rmtree(checkpoint_dir)
+            return data1
+
+    def fdr_to_q_values(self, fdr_values):  ##将FDR转换成qvalue
+        q_values = np.zeros_like(fdr_values)
+        min_q_value = np.max(fdr_values)
+        for i in range(len(fdr_values) - 1, -1, -1):
+            fdr = fdr_values[i]
+            if fdr < min_q_value:
+                min_q_value = fdr
+            q_values[i] = min_q_value
+        return q_values
+
+    def FDR_to_score(self, data, fdr):  #####计算交联肽的FDR
+        data = data[data['type2'] == 'exp']
+        data1 = data.sort_values('ml_score', ignore_index=True, ascending=False)
+        type = np.array(data1['type'])
+        id_TT = np.array(type == 'TT').astype(int)
+        id_TD = np.array(type == 'TD').astype(int)
+        id_DD = np.array(type == 'DD').astype(int)
+        TT_cumsum = np.cumsum(id_TT)
+        # print(TT_cumsum)
+        TD_cumsum = np.cumsum(id_TD)
+        DD_cumsum = np.cumsum(id_DD)
+        fdrs = (TD_cumsum - DD_cumsum) / TT_cumsum
+        q_values = self.fdr_to_q_values(fdrs)
+        # print(q_values)
+        data1.insert(0, 'FDR_rescore', q_values)
+        data2 = data1[data1['FDR_rescore'] <= fdr]
+        score = data2['ml_score']
+        return np.min(score)
+
+    def run(self, feature_dir):
+        data1 = self.cv_score(feature_dir)
+        data1 = data1[data1['pep1_num_matched'] != 0]
+        data1 = data1[data1['pep2_num_matched'] != 0]
+        data1 = data1[data1['Ms1.Profile.Corr'] > 0.8]
+        data1 = data1[data1['inten_ratio'] > 1]
+        score = self.FDR_to_score(data1, 0.05)
+        print(score)
+        data2 = data1[data1['type2'] == 'exp']
+        print('total_exp_TT:', list(data2['type']).count('TT'))
+        data3 = data2[data2['ml_score'] > score]
+        print('now_exp_TT:', list(data3['type']).count('TT'))
+        type = list(data2['type'])
+        print('old_FDR:', (type.count('TD') - type.count('DD')) / type.count('TT'))
+        type = list(data3['type'])
+        print('new_FDR:', (type.count('TD') - type.count('DD')) / type.count('TT'))
+        data2 = data1[data1['type'] == 'TT']
+        data3 = data2[data2['ml_score'] > score]
+        type1 = list(data3['type2'])
+        print('test_num:', type1.count('test'))
+        data4 = data3[data3['type2'] == 'test']
+        return data1, data4
+
+class svm_rescore():
+    def cv_score(self, data, cv_fold=2, fdr=0.01):  ###data提取后的feature信息
+        # feature_list = ['Evidence', 'pep1_num', 'pep2_num', 'pep1_num_matched', 'pep2_num_matched','pep1_cosine', 'pep2_cosine',
+        #                  'delta_RT', 'delta_IM']
+        feature_list = ['Evidence', 'CScore', 'Q.Value', 'PEP', 'pep1_num', 'pep2_num', 'pep1_num_matched','pep2_num_matched',
+                        'pep_cosine', 'pep1_cosine', 'pep2_cosine',
+                        'spec_frag_num', 'alpha_spec_frag_num', 'beta_spec_frag_num',
+                        'pep_entropy', 'pep1_entropy', 'pep2_entropy',
+                        'delta_RT', 'delta_IM', 'averge_corr_list']
+        # feature_list = [ 'pep1_weight', 'pep2_weight''delta_RT', 'delta_IM']
+        data_target = data[(data['type'] == 'TT') & (data['type2'] == 'exp')]
+        # data_target = data[(data['type'] == 'TT') ]
+        data_decoy = data[(data['type'] == 'TD') | (data['type'] == 'DD')]
+        type = set(list(data['type2']))
+        if 'test' in type:
+            test = data[data['type2'] == 'test']
+        if cv_fold > 1:
+            test_df_list = []
+            for i in range(cv_fold):
+                t_mask = np.ones(len(data_target), dtype=bool)
+                slice_num = slice(i, len(data_target), cv_fold)
+                t_mask[slice_num] = False
+                cv_df_target = data_target[t_mask]
+                train_t_df = cv_df_target[cv_df_target['Q.Value'] <= fdr]
+                train_t_df = train_t_df[train_t_df['pep1_num_matched'] != 0]
+                train_t_df = train_t_df[train_t_df['pep2_num_matched'] != 0]
+                train_t_df = train_t_df[train_t_df['Ms1.Profile.Corr'] > 0.8]
+                train_t_df = train_t_df[train_t_df['inten_ratio'] > 1]
+                test_t_df = data_target[slice_num]
+
+                d_mask = np.ones(len(data_decoy), dtype=bool)
+                slice_num = slice(i, len(data_decoy), cv_fold)
+                d_mask[slice_num] = False
+                train_d_df = data_decoy[d_mask]
+                test_d_df = data_decoy[slice_num]
+                model = self.train(train_t_df, train_d_df, feature_list)
+                test_df = pd.concat((test_t_df, test_d_df))
+                test_df_list.append(self.predict(test_df, model, feature_list))
+                print(len(train_t_df['Modified.Sequence']))
+                print(len(train_d_df['Modified.Sequence']))
+                if 'test' in type:
+                    test_data = self.predict(test, model, feature_list)
+                    if i == 0:
+                        ml_score = np.array(test_data['ml_score'])
+                    else:
+                        ml_score = ml_score + np.array(test_data['ml_score'])
+            data1 = pd.concat(test_df_list)
+            if 'test' in type:
+                ml_score = ml_score / cv_fold
+                test.insert(0, 'ml_score', ml_score)
+                print(test)
+                data1 = pd.concat([data1, test])
+            # data2 = data1[data1['Protein_Type'] == 2]
+            # F = FDR()
+            # data2 = F.crosslink_FDR_plink(data2, col_name='ml_score')
+            return data1
+
+    def train(self, train_t_df, train_d_df, feature_list):
+        # if len(train_t_df) > 1000:
+        #     train_t_df = train_t_df.sample(n=1000, random_state=123)
+        # if len(train_d_df) > 500:
+        #     train_d_df = train_d_df.sample(n=500, random_state=123)
+        if len(train_t_df) > 20000:
+            train_t_df = train_t_df.sample(n=20000, random_state=123)
+        if len(train_d_df) > 10000:
+            train_d_df = train_d_df.sample(n=10000, random_state=123)
+        train_df = pd.concat((train_t_df, train_d_df))
+        train_label = np.ones(len(train_df), dtype=np.int32)
+        train_label[len(train_t_df):] = 0
+        x = train_df[feature_list].values
+        st = StandardScaler().fit(x)
+        x = st.transform(x)
+        # pca = PCA(n_components=0.99)
+        # pca.fit(x)
+        # x = pca.transform(x)
+        import xgboost as xgb
+        from sklearn.linear_model import LogisticRegression as lg
+        from sklearn.svm import SVR
+        from sklearn.ensemble import RandomForestRegressor
+        # model = RandomForestRegressor(n_estimators=500, max_depth=8)
+        # model = xgb.XGBRegressor(n_estimators=500, max_depth=10)
+        # model = SVR(C=200, kernel='linear', epsilon=0.1)
+        model = SVR(gamma=0.004, C=500, kernel='rbf', epsilon=0.2)
+        # model = lg()
+        model = model.fit(x, train_label)
+        return model
+
+    def predict(self, test_df, model, feature_list):
+        test_df1 = test_df.copy()
+        x = test_df1[feature_list].values
+        st = StandardScaler().fit(x)
+        x = st.transform(x)
+        # pca = PCA(n_components=0.99)
+        # pca.fit(x)
+        # x = pca.transform(x)
+        # test_df['ml_score'] = model.predict(x)
+        score = model.predict(x)
+        test_df1.insert(0, 'ml_score', score)
+        return test_df1
+
+    def filter_diann_results(self, data):  #####有一些结果是相同MS2scan中鉴定到的相同precursor，需要筛选出得分最高的一个
+        data1 = data.sort_values('MS2.Scan', ignore_index=True)  ####按照肽名字排序
+        scan_list = np.array(data1['MS2.Scan'])
+        mz_list = np.array(data1['m_z']).round(4)
+        name = list(data1)
+        data5 = np.array(data1)  ###用已经有的矩阵来存放新产生的数据，这样可以大大提高速度
+        scan = scan_list[0]
+        mz = mz_list[0]
+        index_list = []
+        peptide_num = len(set(data1['MS2.Scan']))
+        num = 0
+        lenth1 = 0
+        for i in range(len(scan_list)):
+            if (scan_list[i] == scan) and (mz_list[i] == mz):
+                index_list.append(i)
+            else:
+                num = num + 1
+                data2 = data1.iloc[index_list]
+                q_list = list(np.array(data2['ml_score']))
+                data3 = data2[data2['ml_score'] == min(q_list)]
+                lenth2 = len(data3['Precursor.Id'])
+                data5[lenth1:(lenth1 + lenth2), :] = np.array(data3)  ###把filter出来的数据存入data5
+                lenth1 = lenth1 + lenth2
+                index_list = []
+                index_list.append(i)
+                scan = scan_list[i]
+                mz = mz_list[i]
+        data2 = data1.iloc[index_list]
+        q_list = list(np.array(data2['ml_score']))
+        data3 = data2[data2['ml_score'] == min(q_list)]
+        lenth2 = len(data3['Precursor.Id'])
+        data5[lenth1:(lenth1 + lenth2), :] = np.array(data3)  ###把filter出来的数据存入data5
+        lenth1 = lenth1 + lenth2
+        print(lenth1)
+        data6 = pd.DataFrame(data5[:lenth1, :], columns=name)
+        return data6
