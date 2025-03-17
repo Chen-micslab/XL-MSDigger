@@ -8,21 +8,25 @@ python XL-MSDigger_DDA.py --plinkfile plinkfile_dir --mgf_dir mgffile_dir --resc
 ```
 ## DIA XL-MS analysis 
 ```
-python XL-MSDigger_DIA.py --diann_report report_dir --DIA_library DIA_library
+python XL-MSDigger_DIA.py --diann_report './test_data/report.tsv' --DIA_library './test_data/library.csv'
+
 ```
+Description of argparse:  
+--diann_report: The file directory of DIA-NN report.  
+--DIA_library: The file directory of DIA library.  
 ## Building spectral library  
 ```
-python Build_library.py --experiment_library './test_data/total_crosslink_precursor_normal_library.csv' --aim_protein './test_data/PPI.csv' --aim_type 1 --fasta_dir './test_data/human reviewed.fasta'
+python Build_library.py --experiment_library './test_data/experimental_library.csv' --aim_protein './test_data/aim_PPI.csv' --aim_type 1 --fasta_dir './test_data/human reviewed.fasta'
 ```
-### Description of argparse:  
---experiment_library: The file directory of experimental library  
---aim_protein: The file directory of aim protein  
---aim_type: The file directory of ccs model  
---fasta_dir: The file directory of fasta file  
---msms_param_dir: The file directory of msms model     
---rt_param_dir: The file directory of rt model  
---ccs_param_dir: The file directory of ccs model     
---maxcharge: The maximum charge in peptide list, the charge range would in [3,maxcharge]  
+Description of argparse:  
+--experiment_library: The file directory of experimental library.  
+--aim_protein: The file directory of aim protein.  
+--aim_type: The file directory of ccs model.  
+--fasta_dir: The file directory of fasta file.  
+--msms_param_dir: The file directory of msms model.     
+--rt_param_dir: The file directory of rt model.  
+--ccs_param_dir: The file directory of ccs model.     
+--maxcharge: The maximum charge in peptide list, the charge range would in [3,maxcharge].  
 --slice: If the scale of  peptide list is too large for your compute, you can slice the list. It should be set to an integer greater than 0.  
 --batch_size: The batch size.  
 ## Contacts
