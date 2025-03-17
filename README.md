@@ -4,8 +4,12 @@ Here, we constructed Deep4D-XL, a deep learning tool capable of accurately predi
 ## Rescoring of DDA XL-MS data
 The peptide list should be stored in a comma-separated values (CSV) file including two column:'Peptide', 'Charge'. This CSV file should be stored at the directory 'Deep4D/dataset/data/peptide_list.csv'
 ```
-python XL-MSDigger_DDA.py --plinkfile plinkfile_dir --mgf_dir mgffile_dir --rescore_model 'dnn'
+python XL-MSDigger_DDA.py --plinkfile './test_data/plink_test' --mgf_dir './test_data/test.mgf' --rescore_model 'dnn'
 ```
+Description of argparse:  
+--plinkfile: The file directory of pLink2 output.  
+--mgf_dir: The file directory of mgf file.  
+--rescore_model: You can select 'dnn' and 'svm'.  
 ## DIA XL-MS analysis 
 ```
 python XL-MSDigger_DIA.py --diann_report './test_data/report.tsv' --DIA_library './test_data/library.csv'
