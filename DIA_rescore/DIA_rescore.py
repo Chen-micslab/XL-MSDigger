@@ -20,7 +20,7 @@ from sklearn.preprocessing import StandardScaler
 
 class Mydata_label(Dataset):
     def __init__(self, feature, label):
-        self.feature = np.array(feature)  ##这里data是输入的feature dataframe
+        self.feature = np.array(feature) 
         self.label = np.array(label)
 
     def __getitem__(self, index):
@@ -34,7 +34,7 @@ class Mydata_label(Dataset):
 
 class Mydata_nolabel(Dataset):
     def __init__(self, feature):
-        self.feature = np.array(feature)  ##这里data是输入的feature dataframe
+        self.feature = np.array(feature)  
 
     def __getitem__(self, index):
         feature = self.feature[index]
@@ -212,8 +212,6 @@ class dnn_rescore():
         return pre
 
     def cv_score(self, feature_dir):  ###data提取后的feature信息
-        # feature_list = ['Charge', 'SVM_Score', 'len1', 'len2', 'rt_AE', 'ccs_RE', 'match_num', 'match_num1', 'match_num2',
-        #                 'both_m_p_num', 'both_m_p_num1', 'both_m_p_num2', 'cosine', 'SA', 'pearson', 'spearman']
         data = pd.read_csv(feature_dir)
         feature_list = ['Evidence', 'CScore', 'Q.Value', 'PEP', 'pep1_num', 'pep2_num', 'pep1_num_matched', 'pep2_num_matched',
                         'pep_cosine', 'pep1_cosine', 'pep2_cosine',
@@ -236,7 +234,6 @@ class dnn_rescore():
                 train_t_df = train_t_df[train_t_df['pep1_num_matched'] != 0]
                 train_t_df = train_t_df[train_t_df['pep2_num_matched'] != 0]
                 train_t_df = train_t_df[train_t_df['Ms1.Profile.Corr'] > 0.8]
-                # train_t_df = train_t_df[train_t_df['Mass.Evidence'] > 0.5]
                 train_t_df = train_t_df[train_t_df['inten_ratio'] > 1]
                 test_t_df = data_target[slice_num]
 
@@ -314,7 +311,6 @@ class dnn_rescore():
         data1 = data1[data1['Ms1.Profile.Corr'] > 0.8]
         data1 = data1[data1['inten_ratio'] > 1]
         score = self.FDR_to_score(data1, 0.05)
-        print(score)
         data2 = data1[data1['type2'] == 'exp']
         print('total_exp_TT:', list(data2['type']).count('TT'))
         data3 = data2[data2['ml_score'] > score]
@@ -332,16 +328,12 @@ class dnn_rescore():
 
 class svm_rescore():
     def cv_score(self, data, cv_fold=2, fdr=0.01):  ###data提取后的feature信息
-        # feature_list = ['Evidence', 'pep1_num', 'pep2_num', 'pep1_num_matched', 'pep2_num_matched','pep1_cosine', 'pep2_cosine',
-        #                  'delta_RT', 'delta_IM']
         feature_list = ['Evidence', 'CScore', 'Q.Value', 'PEP', 'pep1_num', 'pep2_num', 'pep1_num_matched','pep2_num_matched',
                         'pep_cosine', 'pep1_cosine', 'pep2_cosine',
                         'spec_frag_num', 'alpha_spec_frag_num', 'beta_spec_frag_num',
                         'pep_entropy', 'pep1_entropy', 'pep2_entropy',
                         'delta_RT', 'delta_IM', 'averge_corr_list']
-        # feature_list = [ 'pep1_weight', 'pep2_weight''delta_RT', 'delta_IM']
         data_target = data[(data['type'] == 'TT') & (data['type2'] == 'exp')]
-        # data_target = data[(data['type'] == 'TT') ]
         data_decoy = data[(data['type'] == 'TD') | (data['type'] == 'DD')]
         type = set(list(data['type2']))
         if 'test' in type:
@@ -388,10 +380,6 @@ class svm_rescore():
             return data1
 
     def train(self, train_t_df, train_d_df, feature_list):
-        # if len(train_t_df) > 1000:
-        #     train_t_df = train_t_df.sample(n=1000, random_state=123)
-        # if len(train_d_df) > 500:
-        #     train_d_df = train_d_df.sample(n=500, random_state=123)
         if len(train_t_df) > 20000:
             train_t_df = train_t_df.sample(n=20000, random_state=123)
         if len(train_d_df) > 10000:
@@ -405,15 +393,8 @@ class svm_rescore():
         # pca = PCA(n_components=0.99)
         # pca.fit(x)
         # x = pca.transform(x)
-        import xgboost as xgb
-        from sklearn.linear_model import LogisticRegression as lg
         from sklearn.svm import SVR
-        from sklearn.ensemble import RandomForestRegressor
-        # model = RandomForestRegressor(n_estimators=500, max_depth=8)
-        # model = xgb.XGBRegressor(n_estimators=500, max_depth=10)
-        # model = SVR(C=200, kernel='linear', epsilon=0.1)
         model = SVR(gamma=0.004, C=500, kernel='rbf', epsilon=0.2)
-        # model = lg()
         model = model.fit(x, train_label)
         return model
 
