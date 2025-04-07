@@ -29,8 +29,8 @@ class train_model():
         msms_dir = feature_file
         ccs_dir = feature_file + '/ccs'
         rt_dir = feature_file + '/rt'
-        # msms_paradir = train_msms(msms_dir, self.load_msms_param_dir, self.epochs, self.batch_size, self.msms_lr, self.vali_rate)
-        # ccs_paradir = train_ccs(ccs_dir, self.load_ccs_param_dir, self.epochs, self.batch_size, self.ccs_lr, self.vali_rate)
+        msms_paradir = train_msms(msms_dir, self.load_msms_param_dir, self.epochs, self.batch_size, self.msms_lr, self.vali_rate)
+        ccs_paradir = train_ccs(ccs_dir, self.load_ccs_param_dir, self.epochs, self.batch_size, self.ccs_lr, self.vali_rate)
         rt_paradir = train_rt(rt_dir, self.load_rt_param_dir, self.epochs, self.batch_size, self.rt_lr, self.vali_rate)
         return msms_paradir, ccs_paradir, rt_paradir
 
