@@ -41,7 +41,7 @@ def find_plink_params(plink_path):
 def run():
     args = get_args()          
     plink = plink_with_msconvert_mgf()
-    msms_dir, rt_dir, candidate_msms_dir, candidate_rtccs_dir = plink.process(args.plinkfile, args.mgf_dir)
+    msms_dir, ccs_dir, rt_dir, candidate_msms_dir, candidate_rtccs_dir, has_ion_mobility = plink.process(args.plinkfile, args.mgf_dir)
     if args.finetune == 1:
         print('Finetuning the model......')
         train = train_model()
