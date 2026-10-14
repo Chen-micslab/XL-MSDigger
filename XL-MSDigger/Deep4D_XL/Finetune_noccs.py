@@ -1,8 +1,6 @@
-from Deep4D_XL.dataset.Crosslink_Encoding_ccs import crosslink_ccs_encoding_with_label as encode_ccs
 from Deep4D_XL.dataset.Crosslink_Encoding_msms import encoding_with_label as encode_msms
 from Deep4D_XL.dataset.Crosslink_Encoding_rt import crosslink_rt_encoding_with_label as encode_rt
 from Deep4D_XL.train_msms import do_train as train_msms
-from Deep4D_XL.train_ccs import do_train as train_ccs
 from Deep4D_XL.train_rt import do_train as train_rt
 import os
 

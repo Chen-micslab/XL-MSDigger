@@ -3,7 +3,7 @@ import numpy as np
 import math
 import os
 import sys
-from mass_cal import mz_cal as M
+from Preprocess.mass_cal import mz_cal as M
 
 
 class plink_with_msconvert_mgf():
@@ -96,21 +96,31 @@ class plink_with_msconvert_mgf():
 
         title_line = f'TITLE={title}'
         title_indices = np.where(spectrum == title_line)[0]
-        if len(title_indices) == 0:
-            return rt, ion_mobility
+        if len(title_indices) != 1:
+            raise ValueError(f'Expected one MGF spectrum for pLink TITLE {title!r}; found {len(title_indices)}.')
 
         id = title_indices[0]
                                      
-        for i in range(id + 1, min(id + 10, len(spectrum))):
-            line = str(spectrum[i])
+        # Metadata order varies between exporters; inspect the whole spectrum.
+        while id > 0 and str(spectrum[id]).strip() != 'BEGIN IONS':
+            id -= 1
+        for i in range(id + 1, len(spectrum)):
+            line = str(spectrum[i]).strip()
             if line.startswith('RTINSECONDS='):
-                rt = float(line.split('=')[1])
+                rt = float(line.split('=')[1]) / 60.0
             elif line.startswith('ION_MOBILITY='):
                 parts = line.split('=')[1].strip().split()
                 if len(parts) >= 2:
                     ion_mobility = float(parts[1])
-            elif line.startswith('CHARGE=') or line == 'END IONS':
+            elif line == 'END IONS' or line == 'BEGIN IONS':
                 break
+
+        # The supplied DataAnalysis MGF stores RT in TITLE as $RT$.
+        # TITLE RT is already in minutes, as expected by the RT model.
+        if rt is None and title.count('$') == 2:
+            rt = float(title.split('$')[1])
+        if rt is None or not np.isfinite(rt) or rt < 0:
+            raise ValueError(f'Missing or invalid RT for spectrum {title!r}; check the MGF metadata.')
 
         return rt, ion_mobility
 
@@ -284,6 +294,11 @@ class plink_with_msconvert_mgf():
         data = pd.read_csv(file)
         data = data[data['Peptide_Type'] == 3]          
 
+        # Preserve native pLink3 fields; the bundled pLink2 final score is Score.
+        for old, new in [('Score', 'Re-score_CSM'), ('Q-value', 'Q-value_CSM')]:
+            if new not in data.columns and old in data.columns:
+                data[new] = data[old]
+
                
         m_z_list, charge_list, peptide1_list, site1_list, peptide2_list, site2_list = [], [], [], [], [], []
         rt_list, k0_list, ccs_list, combine_pep, combine_pep_z, len1_list, len2_list = [], [], [], [], [], [], []
@@ -382,7 +397,7 @@ class plink_with_msconvert_mgf():
         id = title_indices[0]
         msms = []
         intensity = []
-        id = id + 5                                                       
+        id = id + 1
 
         for i in range(id, len(spectrum)):
             if spectrum[i] == 'END IONS':
@@ -390,10 +405,11 @@ class plink_with_msconvert_mgf():
             else:
                 try:
                     a = str(spectrum[i])
-                    if ' ' in a:
+                    if '=' not in a:
                         parts = a.split()
-                        msms.append(float(parts[0]))
-                        intensity.append(float(parts[1]))
+                        mz_value, intensity_value = float(parts[0]), float(parts[1])
+                        msms.append(mz_value)
+                        intensity.append(intensity_value)
                 except (ValueError, IndexError):
                     continue
 
@@ -541,8 +557,8 @@ class plink_with_msconvert_mgf():
         sys.stdout.write("Loading file......\r")
 
                        
-        spectrum = np.array(pd.read_csv(mgf_dir, sep='!'))
-        spectrum = spectrum.flatten()
+        with open(mgf_dir, encoding='utf-8-sig') as handle:
+            spectrum = np.array([line.strip() for line in handle])
 
                                                            
         data = plink_data
@@ -601,7 +617,7 @@ class plink_with_msconvert_mgf():
             data_xy = np.array(data_xy)
             data_xy = np.column_stack((data_xy, m_z, m_z_1, inten))
 
-            charge = int(data_xy[0, 4])
+            charge = int(data['charge'].iloc[i])
             for k in range(len(data_xy)):
                 if int(data_xy[k, -5]) > charge:
                     data_xy[k, -1], data_xy[k, -2], data_xy[k, -3] = -1, -1, -1
@@ -702,13 +718,14 @@ class plink_with_msconvert_mgf():
         print('Processing data.......')
 
                                   
-        spectrum = np.array(pd.read_csv(mgf_dir, sep='!'))
-        spectrum = spectrum.flatten()
+        with open(mgf_dir, encoding='utf-8-sig') as handle:
+            spectrum = np.array([line.strip() for line in handle])
         has_ion_mobility = any('ION_MOBILITY=' in str(line) for line in spectrum)
         print(f"Ion Mobility detected: {has_ion_mobility}")
 
                     
         plink_crosslink_data = self.change_plink_filter_crosslink(plinkfile, spectrum)
+        plink_crosslink_candidate = self.change_plink_total_results(plinkfile, spectrum)
                                                                                           
 
                    
@@ -717,12 +734,15 @@ class plink_with_msconvert_mgf():
         plink_crosslink_data_rt = self.filter_plink_peptide_results(plink_crosslink_data)
 
         complete_normal_library = self.genenrate_all_crosslink_fragment(plink_crosslink_data, mgf_dir)
+        candidate_normal_library = self.genenrate_all_crosslink_fragment(plink_crosslink_candidate, mgf_dir)
                                                                                                               
 
         outputdir = mgf_dir.split('.mgf')[0]
         if has_ion_mobility:
             plink_crosslink_data_ccs.to_csv(f'{outputdir}_ccs.csv', index=False)
         plink_crosslink_data_rt.to_csv(f'{outputdir}_rt.csv', index=False)
+        plink_crosslink_candidate.to_csv(f'{outputdir}_all_candidate.csv', index=False)
+        candidate_normal_library.to_csv(f'{outputdir}_all_candidate_msms.csv', index=False)
                                                                                          
                                                                                              
         complete_normal_library.to_csv(f'{outputdir}_complete_normal_library.csv', index=False)
@@ -740,7 +760,7 @@ class plink_with_msconvert_mgf():
 
 if __name__ == '__main__':
     plink = plink_with_msconvert_mgf()
-    msms_dir, ccs_dir, rt_dir, candidate_msms_dir, candidate_rtccs_dir = plink.process(
+    msms_dir, ccs_dir, rt_dir, candidate_msms_dir, candidate_rtccs_dir, has_ion_mobility = plink.process(
         'G:\moran\XXX\PXD017620\C_Lee_090916_ymitos_BS3_XL_B13_C1\C_Lee_090916_ymitos_BS3_XL_B13_C1_10_Rep1',
         'G:\moran\XXX\PXD017620\C_Lee_090916_ymitos_BS3_XL_B13_C1\C_Lee_090916_ymitos_BS3_XL_B13_C1_10_Rep1.mgf'
     )

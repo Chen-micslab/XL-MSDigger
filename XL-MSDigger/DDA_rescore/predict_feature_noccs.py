@@ -1,8 +1,6 @@
 from Deep4D_XL.predict_crosslink_msms_for_rescore import predict as predict_msms
-from Deep4D_XL.predict_crosslink_ccs_for_rescore import predict as predict_ccs
 from Deep4D_XL.predict_crosslink_rt_for_rescore import predict as predict_rt
 from Deep4D_XL.dataset.Crosslink_Encoding_msms import encoding_with_label_candidate as encode_msms
-from Deep4D_XL.dataset.Crosslink_Encoding_ccs import crosslink_ccs_encoding_with_label_candidate as encode_ccs
 from Deep4D_XL.dataset.Crosslink_Encoding_rt import crosslink_rt_encoding_with_label_candidate as encode_rt
 import pandas as pd
 
